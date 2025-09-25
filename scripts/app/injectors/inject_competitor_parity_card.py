@@ -3,10 +3,16 @@
 """
 inject_competitor_parity_card.py (strict v2)
 """
-import argparse, csv, re, html
+import argparse, csv, re, html, sys
 from pathlib import Path
 from urllib.parse import urlparse
 from collections import defaultdict
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.lib.share_of_voice import share_of_voice_from_rows, normalize_domain
 
 CARD_START = "<!--[PARITY_CARD_BEGIN]-->"
 CARD_END = "<!--[PARITY_CARD_END]-->"
@@ -152,39 +158,22 @@ def build_card(rows, top_n, exclude_platforms, extra_excludes, allowlist, min_hi
 <div class="card-body">{_empty_state("No rows after filters; adjust allow/exclude lists or query filters.")}</div></div>
 {CARD_END}"""
 
-    hits = defaultdict(int)
-    top3_hits = defaultdict(int)
-    queries = set()
-    for r in rows:
-        d = r["domain"]
-        hits[d] += 1
-        if r["rank"] is not None and r["rank"] <= 3:
-            top3_hits[d] += 1
-        if r["query"]:
-            queries.add(r["query"])
-
-    keep_domains = {d for d, c in hits.items() if c >= min_hits}
-    rows = [r for r in rows if r["domain"] in keep_domains]
-    if not rows:
+    total_rows = len(rows)
+    query_set = {(r.get("query") or "").strip().lower() for r in rows if r.get("query")}
+    sov_df = share_of_voice_from_rows(rows)
+    if min_hits > 1:
+        sov_df = sov_df[sov_df["Hits"] >= min_hits]
+    if sov_df.empty:
         return f"""{CARD_START}
 <div class="card sp-card"><div class="card-header"><h2>Competitor Parity</h2></div>
-<div class="card-body">{_empty_state("All domains fell below the minimum presence threshold; try --min-hits 1.")}</div></div>
+<div class="card-body">{_empty_state("All domains fell below the minimum keyword threshold; try --min-hits 1.")}</div></div>
 {CARD_END}"""
 
-    hits = defaultdict(int)
-    top3_hits = defaultdict(int)
-    for r in rows:
-        d = r["domain"]
-        hits[d] += 1
-        if r["rank"] is not None and r["rank"] <= 3:
-            top3_hits[d] += 1
-
-    total = sum(hits.values())
-    total3 = sum(top3_hits.values()) or 1
-    sov = {d: 100.0 * hits[d]/total for d in hits}
-    sov3 = {d: 100.0 * top3_hits[d]/total3 for d in hits}
-    top = sorted(hits.keys(), key=lambda d: sov[d], reverse=True)[:top_n]
-    items = [(d, sov[d], sov3.get(d, 0.0)) for d in top]
+    sov_df = sov_df.reset_index(drop=True)
+    items = [
+        (row["domain"], float(row["SoV%"]), float(row["Top-3 SoV%"]))
+        for _, row in sov_df.head(top_n).iterrows()
+    ]
 
     css = (
         "<style>"
@@ -200,19 +189,22 @@ def build_card(rows, top_n, exclude_platforms, extra_excludes, allowlist, min_hi
     if exclude_platforms: settings.append("large platforms excluded")
     if extra_excludes: settings.append(f"{len(extra_excludes)} extra excludes")
     if max_per_q: settings.append(f"max {max_per_q}/domain/query")
-    if min_hits: settings.append(f"min-hits ≥{min_hits}")
+    if min_hits: settings.append(f"min keywords ≥{min_hits}")
     if exclude_q_substr: settings.append("brand filters ON")
 
     kpis = (
         "<div class='kpis'>"
-        f"<div><div class='kpi-title'>Queries</div><div class='kpi-value'>{len(queries)}</div></div>"
-        f"<div><div class='kpi-title'>Domains kept</div><div class='kpi-value'>{len(hits)}</div></div>"
-        f"<div><div class='kpi-title'>Rows</div><div class='kpi-value'>{sum(hits.values())}</div></div>"
+        f"<div><div class='kpi-title'>Queries</div><div class='kpi-value'>{len(query_set)}</div></div>"
+        f"<div><div class='kpi-title'>Domains kept</div><div class='kpi-value'>{len(sov_df)}</div></div>"
+        f"<div><div class='kpi-title'>Rows</div><div class='kpi-value'>{total_rows}</div></div>"
         f"<div><div class='kpi-title'>Filters</div><div class='kpi-value'>{', '.join(settings) if settings else 'none'}</div></div>"
         "</div>"
     )
     table = _bars_table(items)
-    note = "<p class='muted'>SoV% is computed over <b>all kept domains</b> after filters. Display shows top results only.</p>"
+    note = (
+        "<p class='muted'>SoV% uses inverse-rank weighting per keyword after deduping duplicate URLs. "
+        "Display shows the top competitors after filters.</p>"
+    )
     return f"""{CARD_START}
 <div class="card sp-card">
   <div class="card-header"><h2>Competitor Parity</h2>

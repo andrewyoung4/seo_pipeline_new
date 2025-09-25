@@ -12,11 +12,18 @@ Based on v5_6i. Adds:
 Usage:
   python make_client_report_pro_v5_6k.py --phase4 path\\phase4_dashboard.xlsx --phase3 path\\phase3_report.xlsx --phase2 path\\phase2_report.xlsx --origin example.com --out out.html --debug
 """
-import argparse, os, re, json, math
+import argparse, os, re, json, math, sys
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 from string import Template
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.lib.share_of_voice import compute_share_of_voice
 
 
 # === Keyword Tracking helpers (auto-injected) ===
@@ -139,24 +146,35 @@ def _kt_block_gaps(df, origin: str) -> str:
     table = "<table class='tbl'><tr><th>Keyword</th></tr>"+rows+"</table>"
     return f"<div class='card span3'><h2>Coverage Gaps</h2>{table}{more}</div>"
 
-def _kt_block_sov(df, origin: str, hide_megasites: bool=True) -> str:
-    if df.empty: return ""
-    you = _kt_norm(origin)
+def _kt_block_sov(df, origin: str, hide_megasites: bool = True) -> str:
+    if df.empty:
+        return ""
     latest_date = df["fetched_at"].max() if df["fetched_at"].notna().any() else None
-    latest = df[df["fetched_at"]==latest_date] if latest_date is not None else df
-    dom_counts = latest["domain"].value_counts()
-    dom_counts = dom_counts[dom_counts.index.map(lambda d: d!=you)]
-    total = int(dom_counts.sum()) or 1
+    latest = df[df["fetched_at"] == latest_date] if latest_date is not None else df
+    excludes = _MEGA_ if hide_megasites else None
+    sov_df = compute_share_of_voice(
+        latest,
+        keyword_col="keyword",
+        domain_col="domain",
+        rank_col="rank",
+        origin=origin,
+        exclude_domains=excludes,
+    )
+    if sov_df.empty:
+        return ""
     rows = []
-    for d, c in dom_counts.items():
-        if hide_megasites and d in _MEGA_: continue
-        sov = 100.0 * c / total
-        rows.append((d, c, sov))
-    if not rows: return ""
-    rows = rows[:12]
-    table_rows = "".join([f"<tr><td>{d}</td><td>{_kt_fmt_int(c)}</td><td>{_kt_fmt_float(s,1)}%</td></tr>" for d,c,s in rows])
-    table = "<table class='tbl'><tr><th>Domain</th><th>Hits</th><th>SoV%</th></tr>"+table_rows+"</table>"
-    return f"<div class='card span3'><h2>Competitor SoV (SMB)</h2>{table}<div class='mini'>Latest{f' {latest_date.date()}' if latest_date else ''}; megasites hidden.</div></div>"
+    for _, r in sov_df.head(12).iterrows():
+        rows.append(
+            f"<tr><td>{r['domain']}</td><td>{_kt_fmt_int(r['Hits'])}</td><td>{_kt_fmt_float(r['SoV%'],1)}%</td></tr>"
+        )
+    table = "<table class='tbl'><tr><th>Domain</th><th>Keywords</th><th>SoV%</th></tr>" + "".join(rows) + "</table>"
+    suffix = "; megasites hidden." if hide_megasites else "."
+    stamp = f" {latest_date.date()}" if latest_date else ""
+    return (
+        "<div class='card span3'><h2>Competitor SoV (SMB)</h2>" +
+        table +
+        f"<div class='mini'>Latest{stamp}{suffix}</div></div>"
+    )
 
 def _kt_block_opps(df_serp, df_gsc, origin: str) -> str:
     if df_serp.empty or df_gsc.empty: return ""
@@ -409,25 +427,41 @@ def derive_competitors(ph3: Dict[str,pd.DataFrame]) -> pd.DataFrame:
     dom = next((c for c in hits.columns if c.lower()=="domain" or "domain" in c.lower() or "host" in c.lower()), None)
     if dom is None: return pd.DataFrame()
     df = pd.DataFrame({"domain": hits[dom].astype(str)})
-    def getn(label, *alts):
-        c = next((k for k in hits.columns if k.lower()==label.lower()), None)
-        if c is None:
-            for a in alts:
-                c = next((k for k in hits.columns if k.lower()==a.lower()), None)
-                if c: break
-        return _num(hits[c]).fillna(0).astype(int) if c else pd.Series([0]*len(df))
-    df["hits"] = getn("hits","serp_hits","count","score")
-    df["top10"] = getn("top10")
-    df["top3"]  = getn("top3")
+    low = {c.lower(): c for c in hits.columns}
+
+    def get_series(label: str, *alts) -> pd.Series:
+        col = low.get(label.lower())
+        if col is None:
+            for alt in alts:
+                col = low.get(alt.lower())
+                if col:
+                    break
+        return _num(hits[col]).fillna(0) if col else pd.Series([0] * len(df))
+
+    share_col = low.get("sov")
+    share3_col = low.get("sov_top3")
+    share10_col = low.get("sov_top10")
+
+    df["hits"] = get_series("hits", "serp_hits", "count", "score").astype(int)
+    df["top10"] = get_series("top10").astype(int)
+    df["top3"] = get_series("top3").astype(int)
+
+    if share_col and share3_col and share10_col:
+        df["sov"] = pd.to_numeric(hits[share_col], errors="coerce").fillna(0.0)
+        df["sov_top3"] = pd.to_numeric(hits[share3_col], errors="coerce").fillna(0.0)
+        df["sov_top10"] = pd.to_numeric(hits[share10_col], errors="coerce").fillna(0.0)
+        return df.sort_values(["sov", "top3", "hits"], ascending=[False, False, False]).reset_index(drop=True)
+
     c_us = next((c for c in hits.columns if "us" in c.lower()), None)
-    if c_us: df["is_us"] = (hits[c_us].astype(str).str.lower().isin(["true","1","yes","y","t"]))
+    if c_us:
+        df["is_us"] = (hits[c_us].astype(str).str.lower().isin(["true","1","yes","y","t"]))
     tot_hits = int(df["hits"].sum()) or 1
     tot_top3 = int(df["top3"].sum()) or 1
-    tot_top10= int(df["top10"].sum()) or 1
-    df["sov"] = df["hits"]/tot_hits*100.0
-    df["sov_top3"] = df["top3"]/tot_top3*100.0
-    df["sov_top10"] = df["top10"]/tot_top10*100.0
-    return df.sort_values(["hits","top3","top10"], ascending=False).reset_index(drop=True)
+    tot_top10 = int(df["top10"].sum()) or 1
+    df["sov"] = df["hits"] / tot_hits * 100.0
+    df["sov_top3"] = df["top3"] / tot_top3 * 100.0
+    df["sov_top10"] = df["top10"] / tot_top10 * 100.0
+    return df.sort_values(["hits", "top3", "top10"], ascending=False).reset_index(drop=True)
 
 def parity_summary(df: pd.DataFrame, origin_host: str) -> dict:
     if df is None or df.empty: 
@@ -1231,29 +1265,24 @@ def _fmt(x):
 def _build_parity_smb(serp_path, origin):
     df = _sv_norm_serp(_sv_read_csv(serp_path))
     if df.empty or "url" not in df.columns: return ""
-    def _domain(u):
-        try:
-            u = u if isinstance(u,str) else ""
-            if not u.startswith("http"): u = "http://" + u
-            host = urlparse(u).netloc.lower()
-            return host[4:] if host.startswith("www.") else host
-        except Exception:
-            return None
-    df = df.copy()
-    df['domain'] = df['url'].map(_norm_host)
-    df = df.dropna(subset=["domain"])
-    df = df[~df['domain'].apply(_is_platform)]
-    if "position" in df.columns:
-        df["w_all"] = 1.0 / df["position"].clip(lower=1)
-        df["w_top3"] = (df["position"] <= 3).astype(float)
-    else:
-        df["w_all"] = 0.1; df["w_top3"] = 0.0
-    agg = df.groupby("domain", as_index=False).agg(Hits=("domain","size"), W=("w_all","sum"), Top3=("w_top3","sum"))
-    agg = agg.sort_values(["W","Top3","Hits"], ascending=[False, False, False]).head(12)
-    tot_w = agg["W"].sum() or 1.0
-    tot_w3 = agg["Top3"].sum() or 1.0
-    agg["SoV%"] = (agg["W"]/tot_w*100).round(1)
-    agg["Top-3 SoV%"] = (agg["Top3"]/tot_w3*100).round(1)
+    if not {"query", "url", "position"}.issubset(df.columns):
+        return ""
+    view = df.copy()
+    view["domain"] = view["url"].map(_norm_host)
+    view = view.dropna(subset=["domain", "query", "position"])
+    view = view.rename(columns={"query": "keyword", "position": "rank"})
+    sov_df = compute_share_of_voice(
+        view,
+        keyword_col="keyword",
+        domain_col="domain",
+        rank_col="rank",
+        origin=origin,
+        exclude_domains=MEGASITES,
+        exclude_predicate=_is_platform,
+    )
+    if sov_df.empty:
+        return ""
+    agg = sov_df.head(12)
     # charts
     def chart(values, ticks):
         max_val = max([v for _,v in values] + [0.1])

@@ -1,5 +1,4 @@
 import os, time, json, argparse, sys
-from urllib.parse import urlparse
 import requests
 import pandas as pd
 
@@ -8,6 +7,12 @@ HERE = os.path.dirname(__file__)
 COMMON = os.path.abspath(os.path.join(HERE, "..", "common"))
 if COMMON not in sys.path:
     sys.path.insert(0, COMMON)
+
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from scripts.lib.share_of_voice import compute_share_of_voice, normalize_domain
 
 def serper_search(query, per_keyword, gl, hl, device, api_key, retries=4, base_delay=0.8):
     url = "https://google.serper.dev/search"
@@ -26,10 +31,7 @@ def serper_search(query, per_keyword, gl, hl, device, api_key, retries=4, base_d
             return None
 
 def to_domain(u):
-    try:
-        netloc = urlparse(u).netloc.lower()
-        return netloc[4:] if netloc.startswith("www.") else netloc
-    except: return ""
+    return normalize_domain(u)
 
 def extract_hits(serp_json):
     hits = []
@@ -93,16 +95,13 @@ def main():
     os.makedirs(os.path.dirname(args.out_hits), exist_ok=True)
     df_hits.to_csv(args.out_hits, index=False)
 
-    grp = df_hits.groupby("domain")
-    ranked = []
-    for domain, g in grp:
-        if not domain: continue
-        hits = len(g)
-        top3 = int((g["rank"] <= 3).sum())
-        top10 = int((g["rank"] <= 10).sum())
-        score = hits + (2 * top3) + (1 * top10)
-        ranked.append({"domain": domain, "hits": hits, "top3": top3, "top10": top10, "score": int(score)})
-    df_ranked = pd.DataFrame(sorted(ranked, key=lambda r: (-r["score"], -r["hits"])) )
+    sov = compute_share_of_voice(df_hits, origin=args.origin)
+    sov = sov.rename(columns={"Hits": "keywords", "Top10": "top10_keywords", "Top3": "top3_keywords"})
+    sov["score"] = sov["hits"] + 2 * sov["top3"] + sov["top10"]
+    df_ranked = sov.sort_values(["sov", "top3", "hits"], ascending=[False, False, False])
+    df_ranked = df_ranked[
+        ["domain", "hits", "top3", "top10", "sov", "sov_top3", "sov_top10", "score"]
+    ]
     df_ranked.to_csv(args.out, index=False)
     print(f"Wrote {args.out} and {args.out_hits}")
 
