@@ -1,0 +1,48 @@
+{
+  "triage": "data/outputs/phase1/phase1_triage.xlsx",
+  "gsc": "data/outputs/phase2/gsc_queries.csv",
+  "seeds": "data/inputs/seeds/keywords.txt",
+  "expand": true,
+  "per_seed": 3,
+  "max_queries": 120,
+  "must": [
+    "crochet",
+    "amigurumi",
+    "plush",
+    "stuffed",
+    "pattern",
+    "handmade",
+    "keychain"
+  ],
+  "include": [
+    "frog",
+    "mushroom",
+    "axolotl",
+    "bee",
+    "turtle",
+    "octopus",
+    "cat",
+    "dog",
+    "bunny",
+    "cow",
+    "duck",
+    "flower",
+    "ghost",
+    "heart",
+    "bouquet"
+  ],
+  "exclude": [
+    "amazon",
+    "pinterest",
+    "reddit",
+    "youtube",
+    "free",
+    "download",
+    "pdf",
+    "svg",
+    "template",
+    "clipart",
+    "wallpaper"
+  ],
+  "out": "data/inputs/phase2/keyword_map.csv"
+}

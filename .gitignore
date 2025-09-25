@@ -1,0 +1,42 @@
+﻿@'
+# --- Secrets & auth ---
+# Ignore BOTH "secrets" and ".secrets" folders anywhere
+**/secrets/**
+**/.secrets/**
+
+# Common secret filenames anywhere
+**/gsc_oauth_token.json
+**/gsc_oauth_client.json
+.env
+.env.*
+*.pem
+*.p12
+*.pfx
+*.key
+id_rsa
+id_ed25519
+.ssh/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Local data/artifacts ---
+data/outputs/
+reports/
+*.sqlite
+*.xlsx
+*.csv
+*.html
+
+# --- OS/editor ---
+.DS_Store
+Thumbs.db
+*.code-workspace
+
+# --- Node/Streamlit cache ---
+node_modules/
+.streamlit/
+'@ | Out-File -Encoding utf8 .gitignore

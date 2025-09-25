@@ -1,0 +1,18 @@
+{
+  "required": [
+    "name",
+    "image",
+    "offers.price",
+    "offers.priceCurrency"
+  ],
+  "recommended": [
+    "offers.availability",
+    "sku",
+    "brand.name|brand",
+    "gtin|gtin8|gtin12|gtin13|gtin14",
+    "aggregateRating.ratingValue",
+    "aggregateRating.reviewCount",
+    "review"
+  ],
+  "eligibility_logic": "has('name') and has('image') and has('offers.price') and has('offers.priceCurrency')"
+}
